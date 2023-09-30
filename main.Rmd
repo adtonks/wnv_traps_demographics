@@ -1,0 +1,126 @@
+---
+title: "main"
+author: "Adam Tonks"
+date: "2023-09-18"
+output: pdf_document
+---
+
+```{r}
+library(maps)
+library(mapdata)
+library(sf)
+library(dplyr)
+library(viridis)
+library(ggspatial)
+library(patchwork)
+library(ggmap)
+data <- read.csv("data.csv")
+```
+
+```{r}
+pos_white_pct <- sum(data$White[data$num_positive>0]) /
+  sum(data$TPOP2020[data$num_positive>0])
+pos_black_pct <- sum(data$Black[data$num_positive>0]) /
+  sum(data$TPOP2020[data$num_positive>0])
+neg_white_pct <- sum(data$White[data$num_positive==0]) /
+  sum(data$TPOP2020[data$num_positive==0])
+neg_black_pct <- sum(data$Black[data$num_positive==0]) /
+  sum(data$TPOP2020[data$num_positive==0])
+```
+
+```{r}
+pos_white_pct
+pos_black_pct
+neg_white_pct
+neg_black_pct
+```
+
+```{r}
+# cook and lake counties include part of lake michigan in the il shape file,
+# so use great lakes shape file to trim off those parts of cook and lake counties
+il_counties <- st_read("il_counties.shp")
+```
+
+```{r}
+chicago_zip <- st_read("chicago_zip.shp")
+pop_data <- read.csv("pop_counts.csv")
+pop_data <- pop_data[pop_data$Year==2021, ]
+names(pop_data)[3] <- "zip"
+chicago_zip <- merge(chicago_zip, pop_data, all.x=TRUE)
+chicago_zip <- cbind(chicago_zip, pop_dens=1000*(chicago_zip$Population...Total/chicago_zip$shape_area))
+```
+
+```{r}
+# assemble the complete plot
+map_data <- read.csv("all_flat.csv")
+lonlat <- map_data[, c(12, 10)]
+freq_table <- table(paste(lonlat$LONGITUDE, lonlat$LATITUDE, sep=", "))
+lonlat_uniq <- strsplit(names(freq_table), ", ", fixed=TRUE)
+lonlat_table <- t(as.data.frame(lonlat_uniq))
+rownames(lonlat_table) <- 1:nrow(lonlat_table)
+colnames(lonlat_table) <- c("lon", "lat")
+lonlat_table <- cbind.data.frame(lonlat_table, count=as.vector(freq_table))
+lonlat_table$lon <- as.numeric(lonlat_table$lon)
+lonlat_table$lat <- as.numeric(lonlat_table$lat)
+options(scipen=10000)
+my_breaks <- c(0, 0.2, 2, 20)
+
+chicago_bound <- st_union(st_read("chicago_zip.shp"))
+chicago_bound <- st_transform(chicago_bound, crs = 4326)
+points <- st_as_sf(lonlat_table[, 1:2], coords = c("lon", "lat"), crs = 4326)
+pnt_mask <- sapply(st_intersects(points, chicago_bound), function(x){length(x)==0})
+
+anw_points <- st_as_sf(data[, 11:10], coords = c("long", "lat"), crs = 4326)
+anw_pnt_mask <- sapply(st_intersects(anw_points, chicago_bound), function(x){length(x)==0})
+
+chicago_plt <- ggplot() +
+  geom_sf(data=chicago_zip, aes(fill=pop_dens), show.legend=TRUE) +
+  scale_fill_viridis(name="Population", trans="log10", breaks=my_breaks,
+                     labels=my_breaks, option="turbo") +
+  geom_point(data=data[!anw_pnt_mask, ], aes(x=long, y=lat),
+             shape=1, col="black", size=2, stroke=0.6) +
+  geom_point(data=lonlat_table[!pnt_mask, ], aes(x=lon, y=lat),
+             shape=4, col="white", size=2, stroke=0.6) +
+  coord_sf(xlim=c(-87.96, -87.51), ylim=c(41.65, 42.03)) +
+  theme_minimal() +
+  annotation_scale(location="tl", width_hint=0.5) +
+  theme(axis.title.x=element_blank(), axis.title.y=element_blank(),
+        axis.text.x=element_blank(), axis.text.y=element_blank(),
+        panel.grid.major=element_line(colour="transparent"),
+        panel.border=element_rect(color="black", fill=NA, size=0.6),
+        panel.background = element_rect(fill='white', colour='white'),
+        plot.margin=unit(c(0, 0, 0, 0), "cm"))
+chicago_plt
+
+# embedFonts("il_traps_col.pdf")
+```
+
+```{r}
+trap_reads <- aggregate(data$n, by=list(zip=data$zip), FUN=sum)
+trap_reads <- merge(trap_reads, pop_data, all.x=TRUE)
+trap_reads <- trap_reads[!is.na(trap_reads$Year), ]
+income <- read.csv("zip_income.csv")
+```
+
+```{r}
+pct_minority <- 1-trap_reads$Population...White.Non.Latinx/trap_reads$Population...Total
+mod <- lm(trap_reads$x ~ pct_minority)
+summary(mod)
+plot(pct_minority, trap_reads$x, xlab = "% ethnic minority", ylab = "total trap readings")
+abline(mod$coefficients[1], mod$coefficients[2])
+```
+
+```{r}
+summary(lm(trap_reads$x ~ trap_reads$Population...Total))
+```
+
+```{r}
+model <- glm(pct_minority ~ trap_reads$x, family=binomial(link='logit'))
+model$fitted.values
+newdat <- data.frame(hp=seq(min(trap_reads$x), max(trap_reads$x),len=100))
+newdat$vs = predict(model, newdata=newdat, type="response")
+plot(pct_minority ~ trap_reads$x, col="red4")
+lines(vs ~ hp, newdat, col="green4", lwd=2)
+```
+```
+
